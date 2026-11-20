@@ -1,188 +1,167 @@
-# Cyclone Intensity Estimation — a build-it-from-scratch guide
+# Cyclone Intensity Estimation — North Indian Ocean
 
-Your proposal is solid. This repo is that proposal turned into working code, plus
-three corrections you need to make before you start downloading anything.
+Predicting tropical cyclone maximum sustained wind speed from storm-centred
+infrared satellite imagery, for the Arabian Sea and Bay of Bengal.
 
----
+A multi-modal CNN–LSTM with cross-attention, trained on NOAA archives, with
+cross-basin transfer learning to address the basin's severe class imbalance.
 
-## Read this first: three things in the proposal that will break
-
-### 1. HURSAT-B1 stops in 2015, not 2024
-
-The publicly downloadable version is **HURSAT-B1 v06, covering 1978–2015**. There is
-a newer internal version (v07b) that NOAA used to build the ADT-HURSAT product
-through 2024, but the raw imagery archive you can download is still the 2015 one.
-
-So:
-
-- Change your year range from **2000–2024 → 2000–2015**.
-- **Tauktae (2021) and Biparjoy (2023) cannot be your test storms.** There is no
-  imagery for them. Swap in **Gonu (2007), Nargis (2008), Phailin (2013),
-  Hudhud (2014), Chapala (2015)** — all severe, all well inside coverage.
-
-This is not a downgrade. Say so explicitly in your report: "HURSAT-B1 v06 provides a
-homogenised, inter-satellite-calibrated record through 2015; we use the full
-2000–2015 window to avoid mixing calibration regimes." That is a *better* sentence
-than one about 2024.
-
-### 2. IBTrACS is now v04r01, and your URL points at v04r00
-
-Use this instead (already set in `config.py`):
-
-```
-https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.NI.list.v04r01.csv
-```
-
-### 3. Do ERA5 last, not first
-
-The Copernicus API moved in late 2024: new URL, new token format, and requests fail
-with an unhelpful 403 until you manually click "accept terms" on each dataset page.
-Downloads also sit in a queue. It is the single most likely thing to eat a week.
-
-Your model works fine with satellite imagery plus position/motion features alone.
-Get that working end to end, *then* add SST and wind shear as an improvement you can
-show a before/after number for. That is also a better story in the report.
+Deep Learning course project · MS Artificial Intelligence · NED University of
+Engineering and Technology.
 
 ---
 
-## The order to build things
+## Why
 
-The mistake almost everyone makes is downloading 50 GB of satellite data before
-knowing whether their training loop runs. Do it backwards.
+Aircraft reconnaissance is not flown in this basin, so intensity is estimated
+from satellite imagery using the Dvorak technique — a manual procedure from
+1975 whose output varies between analysts. This project automates that
+estimate.
 
-| # | Do this | Command | Time |
-|---|---------|---------|------|
-| 0 | Prove the model trains, on fake data | `python make_fake_data.py` then `python train.py --epochs 3` | 15 min |
-| 1 | Get the labels | `python step1_get_ibtracs.py` | 1 min |
-| 2 | Clean them, look at them | `python step2_explore_tracks.py` | 2 min |
-| 3 | Get imagery for **two** storms only | `python step3_get_hursat.py --years 2007 --limit 2` | 10 min |
-| 4 | Build the dataset from those two | `python step4_build_dataset.py` | 5 min |
-| 5 | Train on two storms. Expect bad numbers. | `python train.py --epochs 5` | 10 min |
-| 6 | *Now* download all years | `python step3_get_hursat.py` | hours |
-| 7 | Rebuild, train properly, evaluate | `step4` → `train.py` → `evaluate.py` | hours |
-| 8 | Optional: add ERA5 | `python step5_era5_optional.py --year 2007 --month 6` | days |
+## Results
 
-Step 0 matters more than it looks. `make_fake_data.py` writes exactly the files step 4
-would write, but with synthetic storms — a cold cloud blob that gets tighter and grows
-an eye as wind speed rises. If training works on that, every bug left is a *data* bug,
-and you will know which half of the project to debug.
+Every configuration was run with five random seeds; figures are mean ± std.
+Welch's *t*-test against the full model.
 
-Setup:
+| Model | Test RMSE (kt) | Cat 3+ RMSE (kt) | Cat 3+ bias (kt) |
+|---|---|---|---|
+| Predict-the-mean baseline | 35.65 | — | — |
+| Position & season only | 31.95 ± 0.00 | 63.30 ± 0.00 | −61.50 |
+| Imagery only | 25.03 ± 2.00 | 48.38 ± 7.25 | −44.63 |
+| Full model, trained locally | 22.79 ± 1.19 | 46.91 ± 3.36 | −42.52 |
+| Pre-trained, backbone frozen | 12.36 ± 0.41 | **11.97 ± 1.29** | **−4.25** |
+| **Pre-trained, fine-tuned** | **12.15 ± 0.50** | 14.09 ± 1.93 | −7.17 |
+
+Cross-basin pre-training reduces error by 10.64 kt
+(p = 4.8 × 10⁻⁶). Freezing the transferred backbone entirely is
+statistically indistinguishable from fine-tuning it (p = 0.49), which suggests
+the visual signature of cyclone intensity is largely basin-independent.
+
+## Architecture
+
+```
+4 infrared frames (12 h)  →  CNN backbone  ─┬─→ pooled → LSTM → state h
+                                            └─→ 4×8×8 patch tokens
+                                                      ↓
+                              h (query) → cross-attention → context + attention map
+                                                      ↓
+lat, lon, month, motion  →  MLP  ──────────→ concat → dense → wind speed (kt)
+```
+
+2.1 M parameters, written from scratch. No pre-trained image classifier is used
+as a backbone; the transfer weights come from this same architecture trained on
+other basins.
+
+## Data
+
+| Source | Role |
+|---|---|
+| [IBTrACS v04r01](https://www.ncei.noaa.gov/products/international-best-track-archive) | best-track labels (`USA_WIND`, position, time) |
+| [HURSAT-B1 v06](https://www.ncei.noaa.gov/products/hurricane-satellite-data) | storm-centred 11 µm infrared imagery |
+
+48 storms, 2,341 labelled frames, 2000–2015. Both archives are US government
+works in the public domain. No Kaggle dataset and no synthetic data are used.
+
+**The split is storm-disjoint.** Consecutive frames are three hours apart and
+visually near-identical, so a random split over frames would place almost
+identical images in both training and test.
+
+## Quick start
 
 ```bash
 pip install -r requirements.txt
+
+# prove the pipeline works — no downloads, synthetic storms
+python make_fake_data.py
+python train.py --epochs 3
 ```
 
----
+With the real data:
 
-## What each file does
-
-```
-config.py                 every setting, in one place. Change things here.
-step1_get_ibtracs.py      download the ground truth (wind speed per storm per 3 h)
-step2_explore_tracks.py   clean it, add tabular features, plot sanity checks
-step3_get_hursat.py       download the satellite netCDF files
-step4_build_dataset.py    netCDF -> 128x128 .npy images + one manifest.csv
-step5_era5_optional.py    optional SST / wind shear
-make_fake_data.py         synthetic data so you can test before downloading
-dataset.py                builds 4-frame sequences, splits by storm
-model.py                  CNN + LSTM + cross-attention + tabular fusion, and W-MSE
-train.py                  training loop, warm-up, early stopping, baseline check
-evaluate.py               metrics table + the figures for your report
+```bash
+python step1_get_ibtracs.py      # labels
+python step3_get_hursat.py       # imagery (several GB)
+python step4_build_dataset.py    # → data/processed/manifest.csv
+python train.py --init-from checkpoints/pretrained.pt --epochs 60 --balance 0.5
+python evaluate.py
 ```
 
-Everything after step 4 reads **only** `data/processed/manifest.csv`. One table, one
-row per satellite frame, containing the image filename, the true wind speed, and the
-tabular features. Do the slow messy work once, then never touch netCDF again.
+## Model weights and processed data
 
----
+Weights and processed data are **not** in this repository — git is the wrong
+place for either. Both are in a 109 MB bundle together with the processed
+dataset (2,341 frames), the trained checkpoints and every figure:
 
-## How the model actually works
+**[Download the runnable bundle](https://drive.google.com/file/d/1sWiXUPsi5kEDgiKP_hz2mFNT_cbhGjM4/view?usp=sharing)**
 
-```
-images (B, 4, 1, 128, 128)
-        │
-    [1] CNN            each frame → an 8×8 grid of 256-dim features
-        │
-    [2] LSTM           reads the 4 frames in order → one summary vector h
-        │
-    [3] Cross-attention
-        query = h ("what I remember about how this storm has been developing")
-        keys  = all 4×8×8 = 256 patches from all frames
-        → a context vector, plus attention weights you can plot as a heat map
-        │
-tab ─ [4] MLP ──→ concat(context, h, tab) → dense → wind speed in knots
+It reproduces every number in the results table in about two minutes, without
+retraining:
+
+```bash
+unzip cyclone_share.zip && cd cyclone_share
+pip install -r requirements.txt
+python evaluate.py
 ```
 
-Two things worth saying out loud in your report:
+## Repository layout
 
-**Why attend over patches and not just time steps.** Attending over the four time steps
-alone gives you a bar chart of four numbers. Attending over every patch of every frame
-gives you a `(4, 8, 8)` map you can overlay on the imagery — that is the "attention map
-overlay" deliverable, and it lets you show the model locking onto the eyewall.
+| File | What it does |
+|---|---|
+| `step1_get_ibtracs.py` | downloads the best-track labels |
+| `step2_explore_tracks.py` | cleans tracks, builds tabular features |
+| `step3_get_hursat.py` | downloads satellite imagery by storm ID |
+| `step4_build_dataset.py` | netCDF → 128×128 frames + manifest |
+| `step6_build_global.py` | builds the other-basin pre-training set |
+| `dataset.py` | sequence windows, storm-disjoint split, augmentation |
+| `model.py` | the architecture and the weighted MSE loss |
+| `pretrain.py` / `train.py` | the two training stages |
+| `evaluate.py` | per-band metrics, lifecycle curves, attention maps |
+| `check_leakage.py` | three-way leakage audit of the pre-training set |
+| `repeat_runs.py` | multi-seed runs with mean ± std |
+| `make_ablation_table.py` | the ablation table and chart |
+| `make_fake_data.py` | synthetic data for testing without downloads |
 
-**Why the weighted loss.** In the North Indian Ocean, Cat 3+ observations are a small
-single-digit percentage of your rows (step 2 prints the exact number). Plain MSE will
-happily sacrifice every intense storm to shave error off the common weak ones — and
-intense storms are the only ones anyone cares about. `WeightedMSE` multiplies the
-squared error by a weight that ramps from 1× to 3× around 96 kt.
+## Reproducing the figures
 
----
+```bash
+python evaluate.py              # per-band metrics + attention maps
+python check_leakage.py         # leakage audit
+python make_ablation_table.py   # ablation table and chart
+```
 
-## Three ways to not fool yourself
+## Limitations
 
-**Split by storm, never by row.** Frames 3 hours apart are nearly identical. If Phailin
-has some frames in train and some in test, your RMSE will look spectacular and mean
-nothing. `dataset.py` splits whole storms. Your entire result depends on this one line.
+- The public HURSAT-B1 release ends in **2015**, so Tauktae (2021) and
+  Biparjoy (2023) cannot be evaluated.
+- Of 90 storms in the best-track record for the period, **48** had usable
+  imagery.
+- IBTrACS `USA_WIND` in this basin is itself largely **Dvorak-derived**, so the
+  model is partly learning to reproduce the Dvorak technique rather than being
+  trained against independent ground truth.
+- The ERA5 environmental branch (sea-surface temperature, vertical wind shear)
+  is specified in the design but **not implemented**.
+- **This is a course project and is not validated for operational use.**
 
-**Always report the naive baseline.** `train.py` prints the RMSE you would get by
-predicting the training mean for every frame. If your model is not clearly below it,
-it has learned nothing, whatever the loss curve says.
+## Citation
 
-**Report RMSE broken down by intensity band.** `evaluate.py` does this. An overall RMSE
-of 12 kt hides whether you are at 8 kt on weak storms and 30 kt on Cat 4s — which is
-the thing your grader will ask about.
+```bibtex
+@misc{jameel2026cyclone,
+  author = {Jameel, Junaid},
+  title  = {Multi-Modal Tropical Cyclone Intensity Estimation
+            in the North Indian Ocean},
+  year   = {2026},
+  note   = {Deep Learning course project, NED University of Engineering
+            and Technology},
+  howpublished = {\url{https://github.com/Junaidjameel773/cyclone-intensity-nio}}
+}
+```
 
----
+## Acknowledgements
 
-## What to actually put in the report
+Data courtesy of NOAA NCEI: IBTrACS (Knapp et al., 2010; Gahtan et al., 2024)
+and HURSAT-B1 (Knapp & Kossin, 2007).
 
-The deliverables in your proposal map onto this:
+## Licence
 
-1. **Ablation table.** Same data, four rows: image-only → + LSTM → + cross-attention →
-   + tabular fusion. Each row RMSE / MAE overall and for Cat 3+. This is the single
-   most convincing table you can produce, and `--plain-mse` gives you a fifth row for
-   the loss function.
-2. **Per-storm lifecycle plots** (`figures/03_storm_*.png`) — predicted vs actual across
-   Gonu, Phailin, Hudhud. Discuss where it lags during rapid intensification. It will.
-3. **Attention overlays** (`figures/04_attention_*.png`).
-4. **Honest limitations.** The 2015 cutoff. Small Cat 3+ sample. That IBTrACS USA_WIND
-   in this basin is itself largely Dvorak-estimated from satellite imagery — so you are
-   partly learning to imitate the Dvorak technique, not measuring ground truth. Saying
-   this yourself is worth more marks than hoping nobody notices.
-
----
-
-## When something goes wrong
-
-**`step3` finds no links / the URL 404s.** Open
-`https://www.ncei.noaa.gov/data/hurricane-satellite-hursat-b1/archive/v06/` in a
-browser and look at the folder layout with your own eyes, then adjust the filter in
-`fetch_year`. NCEI is mid cloud-migration and paths do move.
-
-**`step4` keeps all files but matches none.** The storm name inside the netCDF did not
-match IBTrACS. Print `name` and `ts` inside `read_ir` for the first ten files and see
-what you are actually getting.
-
-**`read_ir` returns None for everything.** The IR variable is not called `IRWIN` in your
-files. Open one file and print `ds.data_vars`, then add the real name to the tuple.
-
-**Training loss goes to NaN.** Lower the learning rate to `1e-4`. Check no image is all
-NaN (`np.isfinite(img).all()`).
-
-**Val RMSE is far below train loss.** You probably rebuilt the manifest without deleting
-`data/processed/frames/` first, and old fake frames are still in there.
-
-**It is too slow on CPU.** It will be. Use Google Colab or Kaggle for a free GPU; both
-mount fine if you upload `data/processed/` as a zip. The model is only 2.1 M parameters,
-so a T4 is plenty.
+Code: MIT. Data: public domain (US government work), redistributed under the
+terms of the original archives.
