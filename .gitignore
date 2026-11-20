@@ -1,0 +1,14 @@
+data/
+*.nc
+*.npy
+*.tar.gz
+checkpoints/
+*.pt
+*.pth
+figures/
+logs/
+old_runs/
+Extras/
+__pycache__/
+*.py[cod]
+.venv/

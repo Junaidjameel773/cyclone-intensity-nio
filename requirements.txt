@@ -1,0 +1,8 @@
+torch>=2.2
+numpy
+pandas
+matplotlib
+scikit-image
+xarray
+netCDF4
+cdsapi        # only needed for the optional ERA5 step
